@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     smtp_from: str = Field(default="", validation_alias="APP_SMTP_FROM")
     sms_api_url: str = Field(default="", validation_alias="APP_SMS_API_URL")
     sms_api_token: str = Field(default="", validation_alias="APP_SMS_API_TOKEN")
+    sms_template_id: str = Field(default="", validation_alias="APP_SMS_TEMPLATE_ID")
     google_client_ids: str = Field(default="", validation_alias="APP_GOOGLE_CLIENT_IDS")
 
     model_config = SettingsConfigDict(

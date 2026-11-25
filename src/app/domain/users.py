@@ -10,6 +10,7 @@ class UserRecord:
     password_hash: str | None
     google_sub: str | None
     created_at: datetime
+    name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,7 @@ class NewUser:
     phone: str | None
     password_hash: str | None
     google_sub: str | None
+    name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -28,3 +30,4 @@ class ResetCode:
     expires_at: datetime
     used_at: datetime | None
     created_at: datetime
+    purpose: str = "reset"

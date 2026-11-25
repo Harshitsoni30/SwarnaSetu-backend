@@ -7,6 +7,7 @@ from typing import Protocol
 
 from app.domain.repositories import ResetCodeRepository, UserRepository
 from app.domain.users import NewUser, UserRecord
+from app.emails import render_welcome
 from app.services.auth_errors import AuthError, DeliveryError
 from app.services.contacts import (
     classify_identifier,
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 INVALID_LOGIN = "The email, phone, or password is incorrect."
 FORGOT_MESSAGE = "If an account exists, a reset code has been sent."
+LOGIN_OTP_MESSAGE = "If an account exists, a login code has been sent."
 OTP_TTL = timedelta(minutes=10)
 
 
@@ -35,7 +37,13 @@ class SystemClock:
 
 
 class MessageSender(Protocol):
-    def send_email(self, address: str, message: str) -> None: ...
+    def send_email(
+        self,
+        address: str,
+        message: str,
+        subject: str,
+        html: str | None = None,
+    ) -> None: ...
 
     def send_sms(self, phone: str, message: str) -> None: ...
 
@@ -52,8 +60,15 @@ class AuthService:
     clock: Clock
     sender: MessageSender
     google: GoogleVerifier
+    environment: str = "local"
 
-    def register(self, email: str | None, phone: str | None, password: str) -> TokenPair:
+    def register(
+        self,
+        email: str | None,
+        phone: str | None,
+        password: str,
+        name: str | None = None,
+    ) -> TokenPair:
         normalized_email = normalize_email(email)
         normalized_phone = normalize_phone(phone)
         require_contact(normalized_email, normalized_phone)
@@ -65,8 +80,11 @@ class AuthService:
                 phone=normalized_phone,
                 password_hash=hash_password(password),
                 google_sub=None,
+                name=_clean_name(name),
             )
         )
+        if normalized_email is not None:
+            self._send_welcome(normalized_email, user.name)
         return issue_pair(self.secret, user.id, self.clock.now())
 
     def login(self, identifier: str, password: str) -> TokenPair:
@@ -75,6 +93,39 @@ class AuthService:
             raise AuthError("invalid_credentials", INVALID_LOGIN, 401)
         if not verify_password(password, user.password_hash):
             raise AuthError("invalid_credentials", INVALID_LOGIN, 401)
+        return issue_pair(self.secret, user.id, self.clock.now())
+
+    def request_login_otp(self, identifier: str) -> None:
+        user = self._find_optional(identifier)
+        if user is None:
+            return
+        if user.phone is None:
+            raise AuthError(
+                "delivery_failed",
+                "This account has no phone number for a login code.",
+                400,
+            )
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        now = self.clock.now()
+        message = f"Your SwarnaSetu login code is {code}. It expires in 10 minutes."
+        self.codes.add(user.id, _hash_login_otp(self.secret, code), now + OTP_TTL, now, purpose="login")
+        try:
+            self.sender.send_sms(user.phone, message)
+        except DeliveryError as exc:
+            raise AuthError(
+                "delivery_failed",
+                exc.detail or "The login code could not be sent by text message.",
+                503,
+            ) from exc
+
+    def login_with_otp(self, identifier: str, otp: str) -> TokenPair:
+        user = self._find_optional(identifier)
+        now = self.clock.now()
+        code = None if user is None else self.codes.latest_active(user.id, now, purpose="login")
+        expected = _hash_login_otp(self.secret, otp.strip())
+        if user is None or code is None or not hmac.compare_digest(code.code_hash, expected):
+            raise AuthError("invalid_otp", "The code is invalid or expired.", 401)
+        self.codes.mark_used(code.id, now)
         return issue_pair(self.secret, user.id, self.clock.now())
 
     def refresh(self, refresh_token: str) -> TokenPair:
@@ -91,7 +142,11 @@ class AuthService:
         code = f"{secrets.randbelow(1_000_000):06d}"
         now = self.clock.now()
         self.codes.add(user.id, _hash_otp(self.secret, code), now + OTP_TTL, now)
-        self._deliver(user, f"Your password reset code is {code}. It expires in 10 minutes.")
+        self._deliver(
+            user,
+            f"Your password reset code is {code}. It expires in 10 minutes.",
+            "Password reset code",
+        )
         return FORGOT_MESSAGE
 
     def reset_password(
@@ -141,9 +196,17 @@ class AuthService:
         return issue_pair(self.secret, created.id, self.clock.now())
 
     def _reject_duplicates(self, email: str | None, phone: str | None) -> None:
-        if email is not None and self.users.get_by_email(email) is not None:
+        email_taken = email is not None and self.users.get_by_email(email) is not None
+        phone_taken = phone is not None and self.users.get_by_phone(phone) is not None
+        if email_taken and phone_taken:
+            raise AuthError(
+                "identifier_taken",
+                "An account already uses that email address and phone number.",
+                409,
+            )
+        if email_taken:
             raise AuthError("identifier_taken", "An account already uses that email address.", 409)
-        if phone is not None and self.users.get_by_phone(phone) is not None:
+        if phone_taken:
             raise AuthError("identifier_taken", "An account already uses that phone number.", 409)
 
     def _user_for_login(self, identifier: str) -> UserRecord | None:
@@ -158,23 +221,56 @@ class AuthService:
     def _find_optional(self, identifier: str) -> UserRecord | None:
         return self._user_for_login(identifier)
 
-    def _deliver(self, user: UserRecord, message: str) -> None:
+    def _send_welcome(self, email: str, name: str | None) -> None:
+        who = name or "there"
+        sent = self._try_email(
+            email,
+            f"Hello {who}, your SwarnaSetu account has been created.",
+            "Your SwarnaSetu account is ready",
+            render_welcome(name),
+        )
+        if not sent:
+            logger.error("welcome email delivery failed")
+
+    def _deliver(self, user: UserRecord, message: str, subject: str) -> bool:
+        sent = False
         if user.email is not None:
-            self._try_email(user.email, message)
+            sent = self._try_email(user.email, message, subject) or sent
         if user.phone is not None:
-            self._try_sms(user.phone, message)
+            sent = self._try_sms(user.phone, message) or sent
+        return sent
 
-    def _try_email(self, address: str, message: str) -> None:
+    def _try_email(self, address: str, message: str, subject: str, html: str | None = None) -> bool:
         try:
-            self.sender.send_email(address, message)
+            self.sender.send_email(address, message, subject, html)
         except DeliveryError:
-            logger.error("reset code delivery failed")
+            logger.error("email delivery failed")
+            return False
+        return True
 
-    def _try_sms(self, phone: str, message: str) -> None:
+    def _try_sms(self, phone: str, message: str) -> bool:
         try:
             self.sender.send_sms(phone, message)
         except DeliveryError:
-            logger.error("reset code delivery failed")
+            logger.error("code delivery failed")
+            return False
+        return True
+
+
+def _clean_name(name: str | None) -> str | None:
+    if name is None:
+        return None
+    cleaned = " ".join(name.split())
+    if not cleaned or len(cleaned) > 120:
+        raise AuthError("invalid_name", "Enter your name.", 422)
+    return cleaned
+
+
+def _hash_login_otp(secret: str, code: str) -> str:
+    import hashlib
+
+    digest = hmac.new(secret.encode(), f"login:{code}".encode(), hashlib.sha256)
+    return digest.hexdigest()
 
 
 def _hash_otp(secret: str, code: str) -> str:

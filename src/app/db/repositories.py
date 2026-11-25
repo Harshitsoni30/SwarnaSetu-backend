@@ -8,6 +8,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from app.db.models import PasswordResetCodeRow, UserRow
 from app.domain.users import NewUser, ResetCode, UserRecord
 from app.services.auth_errors import AuthError
+from app.services.contacts import phone_match_keys
 
 
 class SqlAlchemyUserRepository:
@@ -21,6 +22,7 @@ class SqlAlchemyUserRepository:
             phone=draft.phone,
             password_hash=draft.password_hash,
             google_sub=draft.google_sub,
+            name=draft.name,
             created_at=datetime.now(UTC),
         )
         with self._session_factory() as session:
@@ -36,7 +38,7 @@ class SqlAlchemyUserRepository:
         return self._one(UserRow.email == email)
 
     def get_by_phone(self, phone: str) -> UserRecord | None:
-        return self._one(UserRow.phone == phone)
+        return self._one(UserRow.phone.in_(phone_match_keys(phone)))
 
     def get_by_google_sub(self, google_sub: str) -> UserRecord | None:
         return self._one(UserRow.google_sub == google_sub)
@@ -69,7 +71,14 @@ class SqlAlchemyResetCodeRepository:
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self._session_factory = session_factory
 
-    def add(self, user_id: str, code_hash: str, expires_at: datetime, now: datetime) -> ResetCode:
+    def add(
+        self,
+        user_id: str,
+        code_hash: str,
+        expires_at: datetime,
+        now: datetime,
+        purpose: str = "reset",
+    ) -> ResetCode:
         row = PasswordResetCodeRow(
             id=str(uuid.uuid4()),
             user_id=user_id,
@@ -77,6 +86,7 @@ class SqlAlchemyResetCodeRepository:
             expires_at=expires_at,
             used_at=None,
             created_at=now,
+            purpose=purpose,
         )
         with self._session_factory() as session:
             session.add(row)
@@ -84,11 +94,12 @@ class SqlAlchemyResetCodeRepository:
             session.refresh(row)
             return _code_record(row)
 
-    def latest_active(self, user_id: str, now: datetime) -> ResetCode | None:
+    def latest_active(self, user_id: str, now: datetime, purpose: str = "reset") -> ResetCode | None:
         statement = (
             select(PasswordResetCodeRow)
             .where(
                 PasswordResetCodeRow.user_id == user_id,
+                PasswordResetCodeRow.purpose == purpose,
                 PasswordResetCodeRow.used_at.is_(None),
                 PasswordResetCodeRow.expires_at > now,
             )
@@ -117,6 +128,7 @@ def _user_record(row: UserRow) -> UserRecord:
         password_hash=row.password_hash,
         google_sub=row.google_sub,
         created_at=row.created_at,
+        name=row.name,
     )
 
 
@@ -128,4 +140,5 @@ def _code_record(row: PasswordResetCodeRow) -> ResetCode:
         expires_at=row.expires_at,
         used_at=row.used_at,
         created_at=row.created_at,
+        purpose=row.purpose,
     )

@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 
 class RegisterRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
     email: str | None = None
     phone: str | None = None
     password: str = Field(min_length=1)
@@ -31,6 +32,15 @@ class ResetPasswordRequest(BaseModel):
 
 class GoogleLoginRequest(BaseModel):
     id_token: str = Field(min_length=1)
+
+
+class OtpRequest(BaseModel):
+    identifier: str = Field(min_length=1)
+
+
+class OtpLoginRequest(BaseModel):
+    identifier: str = Field(min_length=1)
+    otp: str = Field(min_length=1)
 
 
 class TokenResponse(BaseModel):
