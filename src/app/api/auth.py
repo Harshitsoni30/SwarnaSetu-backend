@@ -5,12 +5,14 @@ from app.schemas.auth import (
     GoogleLoginRequest,
     LoginRequest,
     MessageResponse,
+    OtpLoginRequest,
+    OtpRequest,
     RefreshRequest,
     RegisterRequest,
     ResetPasswordRequest,
     TokenResponse,
 )
-from app.services.auth import AuthService
+from app.services.auth import LOGIN_OTP_MESSAGE, AuthService
 from app.services.tokens import TokenPair
 
 PUBLIC_AUTH_PATHS = (
@@ -19,6 +21,8 @@ PUBLIC_AUTH_PATHS = (
     "/auth/refresh",
     "/auth/forgot-password",
     "/auth/reset-password",
+    "/auth/otp/request",
+    "/auth/otp/login",
     "/auth/google",
 )
 
@@ -31,7 +35,7 @@ def build_auth_router(service: AuthService) -> APIRouter:
     @router.post("/register", response_model=TokenResponse, status_code=201)
     def register(body: RegisterRequest) -> TokenResponse:
         return _tokens(
-            service.register(body.email, body.phone, body.password),
+            service.register(body.email, body.phone, body.password, body.name),
         )
 
     @router.post("/login", response_model=TokenResponse)
@@ -50,6 +54,15 @@ def build_auth_router(service: AuthService) -> APIRouter:
     def reset_password(body: ResetPasswordRequest) -> MessageResponse:
         service.reset_password(body.identifier, body.otp, body.old_password, body.new_password)
         return MessageResponse(message="Password updated.")
+
+    @router.post("/otp/request", response_model=MessageResponse)
+    def request_otp(body: OtpRequest) -> MessageResponse:
+        service.request_login_otp(body.identifier)
+        return MessageResponse(message=LOGIN_OTP_MESSAGE)
+
+    @router.post("/otp/login", response_model=TokenResponse)
+    def otp_login(body: OtpLoginRequest) -> TokenResponse:
+        return _tokens(service.login_with_otp(body.identifier, body.otp))
 
     @router.post("/google", response_model=TokenResponse)
     def google_login(body: GoogleLoginRequest) -> TokenResponse:

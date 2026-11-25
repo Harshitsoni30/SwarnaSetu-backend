@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from app.domain.users import NewUser, ResetCode, UserRecord
 from app.services.auth import AuthService, Clock
 from app.services.auth_errors import AuthError, DeliveryError
+from app.services.contacts import phone_match_keys
 from app.services.google_accounts import GoogleIdentity
 
 SECRET = "test-token-secret-value"
@@ -21,6 +22,7 @@ class MemoryUsers:
             password_hash=draft.password_hash,
             google_sub=draft.google_sub,
             created_at=datetime.now(UTC),
+            name=draft.name,
         )
         self.rows.append(user)
         return user
@@ -32,7 +34,8 @@ class MemoryUsers:
         return next((row for row in self.rows if row.email == email), None)
 
     def get_by_phone(self, phone: str) -> UserRecord | None:
-        return next((row for row in self.rows if row.phone == phone), None)
+        keys = set(phone_match_keys(phone))
+        return next((row for row in self.rows if row.phone in keys), None)
 
     def get_by_google_sub(self, google_sub: str) -> UserRecord | None:
         return next((row for row in self.rows if row.google_sub == google_sub), None)
@@ -62,6 +65,7 @@ class MemoryUsers:
             password_hash=password_hash if update_password else current.password_hash,
             google_sub=google_sub if update_google else current.google_sub,
             created_at=current.created_at,
+            name=current.name,
         )
         self.rows = [updated if row.id == user_id else row for row in self.rows]
 
@@ -70,7 +74,14 @@ class MemoryCodes:
     def __init__(self) -> None:
         self.rows: list[ResetCode] = []
 
-    def add(self, user_id: str, code_hash: str, expires_at: datetime, now: datetime) -> ResetCode:
+    def add(
+        self,
+        user_id: str,
+        code_hash: str,
+        expires_at: datetime,
+        now: datetime,
+        purpose: str = "reset",
+    ) -> ResetCode:
         code = ResetCode(
             id=str(uuid.uuid4()),
             user_id=user_id,
@@ -78,15 +89,19 @@ class MemoryCodes:
             expires_at=expires_at,
             used_at=None,
             created_at=now,
+            purpose=purpose,
         )
         self.rows.append(code)
         return code
 
-    def latest_active(self, user_id: str, now: datetime) -> ResetCode | None:
+    def latest_active(self, user_id: str, now: datetime, purpose: str = "reset") -> ResetCode | None:
         matches = [
             row
             for row in self.rows
-            if row.user_id == user_id and row.used_at is None and row.expires_at > now
+            if row.user_id == user_id
+            and row.purpose == purpose
+            and row.used_at is None
+            and row.expires_at > now
         ]
         if not matches:
             return None
@@ -101,6 +116,7 @@ class MemoryCodes:
                 expires_at=row.expires_at,
                 used_at=now if row.id == code_id else row.used_at,
                 created_at=row.created_at,
+                purpose=row.purpose,
             )
             for row in self.rows
         ]
@@ -119,15 +135,27 @@ class RecordingSender:
         self.emails: list[tuple[str, str]] = []
         self.texts: list[tuple[str, str]] = []
 
-    def send_email(self, address: str, message: str) -> None:
-        self.emails.append((address, message))
+    def send_email(
+        self,
+        address: str,
+        message: str,
+        subject: str = "SwarnaSetu",
+        html: str | None = None,
+    ) -> None:
+        self.emails.append((address, html or message))
 
     def send_sms(self, phone: str, message: str) -> None:
         self.texts.append((phone, message))
 
 
 class FailingSender:
-    def send_email(self, address: str, message: str) -> None:
+    def send_email(
+        self,
+        address: str,
+        message: str,
+        subject: str = "SwarnaSetu",
+        html: str | None = None,
+    ) -> None:
         raise DeliveryError("email")
 
     def send_sms(self, phone: str, message: str) -> None:

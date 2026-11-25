@@ -7,6 +7,7 @@ class AuthError(Exception):
 
 
 class DeliveryError(Exception):
-    def __init__(self, channel: str) -> None:
-        super().__init__(channel)
+    def __init__(self, channel: str, detail: str = "") -> None:
+        super().__init__(detail or channel)
         self.channel = channel
+        self.detail = detail

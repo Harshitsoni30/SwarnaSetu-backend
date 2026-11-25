@@ -25,6 +25,7 @@ class UserRow(Base):
     phone: Mapped[str | None] = mapped_column(String(16), nullable=True)
     password_hash: Mapped[str | None] = mapped_column(String(256), nullable=True)
     google_sub: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -37,3 +38,4 @@ class PasswordResetCodeRow(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(16), nullable=False, server_default="reset")

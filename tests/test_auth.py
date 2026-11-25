@@ -31,9 +31,9 @@ def _code(message: str) -> str:
 
 
 def test_register_with_email_only() -> None:
-    service, users, _codes, _sender = make_service()
+    service, users, _codes, sender = make_service()
 
-    pair = service.register("Person@Example.com", None, PASSWORD)
+    pair = service.register("Person@Example.com", None, PASSWORD, "Asha")
 
     user = users.get_by_email("person@example.com")
     assert user is not None
@@ -42,6 +42,10 @@ def test_register_with_email_only() -> None:
     assert user.password_hash is not None
     assert verify_password(PASSWORD, user.password_hash)
     assert read_token(SECRET, pair.access_token, "access", NOW) == user.id
+    assert isinstance(sender, RecordingSender)
+    assert sender.emails[0][0] == "person@example.com"
+    assert "Welcome, Asha" in sender.emails[0][1]
+    assert "account has been created" in sender.emails[0][1]
 
 
 def test_register_with_phone_only() -> None:
@@ -76,6 +80,14 @@ def test_register_rejects_short_password_and_duplicates() -> None:
     assert short_password.value.status_code == 422
     assert duplicate_email.value.code == "identifier_taken"
     assert duplicate_phone.value.code == "identifier_taken"
+    service.register("d@example.com", "+91 98765 43210", PASSWORD)
+    with pytest.raises(AuthError) as formatted_mobile:
+        service.register("e@example.com", "09876543210", PASSWORD)
+    with pytest.raises(AuthError) as plain_mobile:
+        service.register("f@example.com", "9876543210", PASSWORD)
+
+    assert formatted_mobile.value.message == "An account already uses that phone number."
+    assert plain_mobile.value.message == "An account already uses that phone number."
 
 
 def test_login_and_refresh() -> None:
@@ -104,9 +116,9 @@ def test_forgot_password_sends_the_same_code_to_each_contact() -> None:
 
     assert message == FORGOT_MESSAGE
     assert isinstance(sender, RecordingSender)
-    assert sender.emails[0][0] == "a@example.com"
+    assert sender.emails[-1][0] == "a@example.com"
     assert sender.texts[0][0] == "+15550101000"
-    assert _code(sender.emails[0][1]) == _code(sender.texts[0][1])
+    assert _code(sender.emails[-1][1]) == _code(sender.texts[0][1])
     assert len(codes.rows) == 1
 
 
@@ -154,7 +166,7 @@ def test_expired_code_is_rejected() -> None:
     service.register("a@example.com", None, PASSWORD)
     service.forgot_password("a@example.com")
     assert isinstance(sender, RecordingSender)
-    code = _code(sender.emails[0][1])
+    code = _code(sender.emails[-1][1])
     clock.moment = NOW + timedelta(minutes=11)
 
     with pytest.raises(AuthError) as caught:
@@ -229,11 +241,11 @@ def test_auth_routes_are_public_and_use_the_error_format() -> None:
 
     created = client.post(
         "/auth/register",
-        json={"email": "a@example.com", "phone": None, "password": PASSWORD},
+        json={"name": "Asha", "email": "a@example.com", "phone": None, "password": PASSWORD},
     )
     duplicate = client.post(
         "/auth/register",
-        json={"email": "a@example.com", "phone": None, "password": PASSWORD},
+        json={"name": "Asha", "email": "a@example.com", "phone": None, "password": PASSWORD},
     )
     logged_in = client.post(
         "/auth/login",
@@ -245,3 +257,41 @@ def test_auth_routes_are_public_and_use_the_error_format() -> None:
     assert duplicate.status_code == 409
     assert duplicate.json()["code"] == "identifier_taken"
     assert logged_in.status_code == 200
+
+
+def test_login_with_otp_uses_the_sent_code() -> None:
+    service, _users, _codes, sender = make_service()
+    service.register("a@example.com", "+15550101000", PASSWORD)
+
+    service.request_login_otp("+1 555 010 1000")
+
+    assert isinstance(sender, RecordingSender)
+    code = _code(sender.texts[0][1])
+    pair = service.login_with_otp("15550101000", code)
+    assert pair.access_token
+    with pytest.raises(AuthError) as reused:
+        service.login_with_otp("+15550101000", code)
+    assert reused.value.code == "invalid_otp"
+
+
+def test_login_otp_is_not_shown_when_email_fails() -> None:
+    service, _users, _codes, _sender = make_service(sender=FailingSender())
+    service.register("a@example.com", None, PASSWORD)
+
+    with pytest.raises(AuthError) as failed:
+        service.request_login_otp("a@example.com")
+
+    assert failed.value.message == "This account has no phone number for a login code."
+    assert service.request_login_otp("missing@example.com") is None
+
+
+def test_password_reset_code_cannot_be_used_to_log_in() -> None:
+    service, _users, _codes, sender = make_service()
+    service.register("a@example.com", None, PASSWORD)
+    service.forgot_password("a@example.com")
+    assert isinstance(sender, RecordingSender)
+
+    with pytest.raises(AuthError) as caught:
+        service.login_with_otp("a@example.com", _code(sender.emails[-1][1]))
+
+    assert caught.value.code == "invalid_otp"

@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException
 
 from app.api.auth import build_auth_router
@@ -35,6 +36,12 @@ def create_app(
     resolved = settings if settings is not None else get_settings()
     configure_logging(resolved.log_level)
     application = FastAPI(title=resolved.app_name)
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Accept", "Content-Type"],
+    )
     application.add_exception_handler(AuthError, auth_error_handler)
     application.add_exception_handler(HTTPException, http_exception_handler)
     application.add_exception_handler(RequestValidationError, request_validation_handler)
@@ -57,6 +64,7 @@ def _auth_service(settings: Settings) -> AuthService | None:
         clock=SystemClock(),
         sender=SmtpSmsSender(settings),
         google=_GoogleTokenVerifier(set(settings.google_audiences())),
+        environment=settings.environment,
     )
 
 
